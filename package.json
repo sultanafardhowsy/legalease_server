@@ -1,0 +1,25 @@
+{
+  "name": "index.js",
+  "version": "1.0.0",
+  "description": "my express server",
+  "keywords": [
+    "hello"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "legalease_server"
+  },
+  "license": "ISC",
+  "author": "Sultana",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "test": "hellow from server"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "mongodb": "^7.3.0"
+  }
+}
