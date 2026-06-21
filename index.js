@@ -4,6 +4,9 @@ const port = 5000
 const cors = require('cors')
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 require('dotenv').config()
+const Stripe = require("stripe");
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
 
 
 
@@ -44,6 +47,7 @@ async function run() {
     const userCollection = database.collection("user");
     const lawyerCollection = database.collection("lawyers");
     const hireRequestCollection = database.collection("hireRequests");
+    const transactionCollection = database.collection("transaction")
     
 
     // Existing users route
@@ -324,6 +328,171 @@ app.get('/api/dashboard/lawyer/:userId', async (req, res) => {
     res.status(500).json({ message: "Failed to fetch dashboard stats.", error: error.message });
   }
 });
+
+// GET /api/hire-requests/user/:userId — get all requests for a user
+app.get('/api/hire-requests/user/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const requests = await hireRequestCollection
+      .find({ userId })
+      .sort({ requestDate: -1 })
+      .toArray();
+
+    if (requests.length === 0) return res.status(200).json([]);
+
+    // Get unique lawyerIds
+    const lawyerIds = [...new Set(requests.map(r => r.lawyerId))];
+
+    // Fetch lawyer details
+    const lawyers = await lawyerCollection
+      .find({ _id: { $in: lawyerIds } })
+      .toArray();
+
+    // Map lawyerId → lawyer
+    const lawyerMap = {};
+    lawyers.forEach(l => { lawyerMap[l._id.toString()] = l; });
+
+    // Merge lawyer info into each request
+    const enriched = requests.map(r => ({
+      ...r,
+      lawyerName:           lawyerMap[r.lawyerId]?.name           || "Unknown",
+      lawyerSpecialization: lawyerMap[r.lawyerId]?.specialization || "N/A",
+      lawyerFee:            lawyerMap[r.lawyerId]?.fee            || 0,
+      lawyerImage:          lawyerMap[r.lawyerId]?.imageUrl       || null,
+    }));
+
+    res.status(200).json(enriched);
+  } catch (error) {
+    console.error("User hiring history error:", error);
+    res.status(500).json({ message: "Failed to fetch hiring history.", error: error.message });
+  }
+});
+
+app.post("/api/payment/confirm", async (req, res) => {
+  try {
+    const { hireRequestId } = req.body;
+
+    console.log("hireRequestId:", hireRequestId);
+
+    const result = await hireRequestCollection.updateOne(
+      {
+        _id: new ObjectId(hireRequestId),
+      },
+      {
+        $set: {
+          status: "paid",
+          paidAt: new Date(),
+        },
+      }
+    );
+
+    console.log(result);
+
+    res.status(200).json({
+      message: "Payment confirmed.",
+      result,
+    });
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      message: "Failed to confirm payment.",
+    });
+  }
+});
+
+
+
+
+// in index.js
+app.post('/api/transactions/save-success', async (req, res) => {
+  try {
+    const { sessionId } = req.body;
+
+    if (!sessionId) {
+      return res.status(400).json({ success: false, message: "Missing sessionId" });
+    }
+
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+    if (session.payment_status !== 'paid') {
+      return res.status(400).json({ success: false, message: "Payment not completed" });
+    }
+
+    const existing = await transactionCollection.findOne({ stripeSessionId: sessionId });
+    if (existing) {
+      return res.status(200).json({ success: true, message: "Already saved" });
+    }
+
+    const { hireRequestId, lawyerId, userId } = session.metadata;
+
+    // ✅ Save transaction
+    await transactionCollection.insertOne({
+      stripeSessionId: session.id,
+      hireRequestId,
+      lawyerId,
+      userId,
+      amount: session.amount_total / 100,
+      currency: session.currency,
+      customerEmail: session.customer_details?.email,
+      status: "successful",
+      createdAt: new Date(),
+    });
+
+    // ✅ Update hire request status to "paid"
+    await hireRequestCollection.updateOne(
+      { _id: new ObjectId(hireRequestId) },
+      { $set: { status: "paid", paidAt: new Date() } }
+    );
+
+    res.status(201).json({ success: true, message: "Transaction saved" });
+
+  } catch (error) {
+    console.error("Database save error:", error);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+app.patch("/user/:id/plan", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await userCollection.updateOne(
+      {
+        _id: new ObjectId(id),
+        role: "lawyer",
+      },
+      {
+        $set: {
+          plan: "paid",
+          updatedAt: new Date(),
+        },
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).send({
+        success: false,
+        message: "Lawyer not found",
+      });
+    }
+
+    res.send({
+      success: true,
+      message: "Plan updated successfully",
+    });
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).send({
+      success: false,
+      message: "Server error",
+    });
+  }
+});
+
+
 
     await client.db("admin").command({ ping: 1 });
     console.log("MongoDB connected successfully");
