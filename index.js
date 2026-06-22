@@ -23,6 +23,7 @@ app.use(
 );
 app.use(express.json());
 
+
 app.get('/', (req, res) => {
   res.send('Hello World!')
 })
@@ -126,8 +127,9 @@ app.put('/api/lawyer/profile/update', async (req, res) => {
       return res.status(400).json({ message: "All form fields are required to update your profile." });
     }
 
+    // ✅ FIX: Search by raw string 'id' instead of wrapping it in new ObjectId(id)
     const result = await lawyerCollection.updateOne(
-      { _id: id },
+      { _id: id }, 
       { 
         $set: { 
           name,
@@ -136,7 +138,6 @@ app.put('/api/lawyer/profile/update', async (req, res) => {
           fee: Number(fee),
           status,
           imageUrl
-          // Notice we do NOT change 'dateJoined' to keep their initial history intact
         } 
       }
     );
@@ -492,6 +493,31 @@ app.patch("/user/:id/plan", async (req, res) => {
   }
 });
 
+// Add this route to your Express backend
+app.get("/api/lawyer/check-access/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Look up the user in your database
+    const user = await userCollection.findOne({ _id: new ObjectId(id) });
+
+    if (!user) {
+      return res.status(404).json({ allowed: false, message: "User not found" });
+    }
+
+    // Grant access if their role is lawyer AND their plan is paid
+    if (user.role === "lawyer" && user.plan === "paid") {
+      return res.status(200).json({ allowed: true });
+    }
+
+    // Otherwise, deny access cleanly
+    return res.status(200).json({ allowed: false, message: "Account not activated" });
+
+  } catch (error) {
+    console.error("Check access error:", error);
+    res.status(500).json({ allowed: false, message: "Server database error" });
+  }
+});
 
 
     await client.db("admin").command({ ping: 1 });
