@@ -10,12 +10,10 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 app.use(
   cors({
     origin: [
-      "http://localhost:3000",
-      "http://localhost:3000/",
-      "https://leagalease-client.vercel.app",
-      "https://leagalease-client.vercel.app/",
+      process.env.CLIENT_URL,
+      process.env.CLIENT_URL_PROD,
     ],
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     credentials: true,
   })
 );
@@ -270,9 +268,9 @@ async function run() {
         }
 
         let sortOption = { dateJoined: -1 };
-        if (sort === "fee-low")       sortOption = { fee: 1 };
+        if (sort === "fee-low") sortOption = { fee: 1 };
         else if (sort === "fee-high") sortOption = { fee: -1 };
-        else if (sort === "newest")   sortOption = { dateJoined: -1 };
+        else if (sort === "newest") sortOption = { dateJoined: -1 };
 
         const lawyers = await lawyerCollection.find(query).sort(sortOption).toArray();
 
@@ -317,7 +315,7 @@ async function run() {
         users.forEach(u => { userMap[u._id.toString()] = u; });
         const enriched = requests.map(r => ({
           ...r,
-          clientName:  userMap[r.userId]?.name  || "Unknown",
+          clientName: userMap[r.userId]?.name || "Unknown",
           clientEmail: userMap[r.userId]?.email || "Unknown",
           clientImage: userMap[r.userId]?.image || null,
         }));
@@ -340,10 +338,10 @@ async function run() {
         lawyers.forEach(l => { lawyerMap[l._id.toString()] = l; });
         const enriched = requests.map(r => ({
           ...r,
-          lawyerName:           lawyerMap[r.lawyerId]?.name           || "Unknown",
+          lawyerName: lawyerMap[r.lawyerId]?.name || "Unknown",
           lawyerSpecialization: lawyerMap[r.lawyerId]?.specialization || "N/A",
-          lawyerFee:            lawyerMap[r.lawyerId]?.fee            || 0,
-          lawyerImage:          lawyerMap[r.lawyerId]?.imageUrl       || null,
+          lawyerFee: lawyerMap[r.lawyerId]?.fee || 0,
+          lawyerImage: lawyerMap[r.lawyerId]?.imageUrl || null,
         }));
         res.status(200).json(enriched);
       } catch (error) {
@@ -404,61 +402,284 @@ async function run() {
     });
 
     // POST /api/transactions/save-success
-    app.post('/api/transactions/save-success', async (req, res) => {
-      try {
-        const { sessionId } = req.body;
-        if (!sessionId) return res.status(400).json({ success: false, message: "Missing sessionId" });
-        const session = await stripe.checkout.sessions.retrieve(sessionId);
-        if (session.payment_status !== 'paid') return res.status(400).json({ success: false, message: "Payment not completed" });
-        const existing = await transactionCollection.findOne({ stripeSessionId: sessionId });
-        if (existing) return res.status(200).json({ success: true, message: "Already saved" });
-        const { hireRequestId, lawyerId, userId } = session.metadata;
-        await transactionCollection.insertOne({
-          stripeSessionId: session.id, hireRequestId, lawyerId, userId,
-          amount: session.amount_total / 100,
-          currency: session.currency,
-          customerEmail: session.customer_details?.email,
-          status: "successful",
-          createdAt: new Date(),
-        });
-        await hireRequestCollection.updateOne(
-          { _id: new ObjectId(hireRequestId) },
-          { $set: { status: "paid", paidAt: new Date() } }
-        );
-        res.status(201).json({ success: true, message: "Transaction saved" });
-      } catch (error) {
-        console.error("Database save error:", error);
-        res.status(500).json({ success: false, message: "Server error" });
-      }
-    });
+//     app.post("/api/transactions/save-success", async (req, res) => {
+//   try {
+//     const { sessionId } = req.body;
+
+//     if (!sessionId) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "Missing sessionId",
+//       });
+//     }
+
+//     const session =
+//       await stripe.checkout.sessions.retrieve(
+//         sessionId,
+//         {
+//           expand: ["payment_intent"],
+//         }
+//       );
+
+//     if (session.payment_status !== "paid") {
+//       return res.status(400).json({
+//         success: false,
+//         message: "Payment not completed",
+//       });
+//     }
+
+//     const existing =
+//       await transactionCollection.findOne({
+//         stripeSessionId: sessionId,
+//       });
+
+//     if (existing) {
+//       return res.status(200).json({
+//         success: true,
+//         message: "Already saved",
+//       });
+//     }
+
+//     const {
+//       hireRequestId,
+//       lawyerId,
+//       userId,
+//     } = session.metadata;
+
+//     const paymentIntentId =
+//       typeof session.payment_intent === "object"
+//         ? session.payment_intent.id
+//         : session.payment_intent;
+
+//     await transactionCollection.insertOne({
+//       stripeSessionId: session.id,
+
+//       paymentIntentId,
+
+//       hireRequestId,
+//       lawyerId,
+//       userId,
+
+//       amount: session.amount_total / 100,
+
+//       currency: session.currency,
+
+//       customerEmail:
+//         session.customer_details?.email,
+
+//       status: "successful",
+
+//       createdAt: new Date(),
+//     });
+
+//     await hireRequestCollection.updateOne(
+//       {
+//         _id: new ObjectId(hireRequestId),
+//       },
+//       {
+//         $set: {
+//           status: "paid",
+//           paidAt: new Date(),
+//         },
+//       }
+//     );
+
+//     res.status(201).json({
+//       success: true,
+//       message: "Transaction saved",
+//     });
+
+//   } catch (error) {
+//     console.error("Database save error:", error);
+
+//     res.status(500).json({
+//       success: false,
+//       message: "Server error",
+//     });
+//   }
+// });
+
 
     // PATCH /user/:id/plan
-   app.patch("/api/user/:id/plan", async (req, res) => {
+  
+  app.post("/api/transactions/save-success", async (req, res) => {
+  try {
+
+    const { sessionId } = req.body;
+
+    if (!sessionId) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing sessionId",
+      });
+    }
+
+    const session = await stripe.checkout.sessions.retrieve(
+      sessionId,
+      {
+        expand: ["payment_intent"],
+      }
+    );
+
+    if (session.payment_status !== "paid") {
+      return res.status(400).json({
+        success: false,
+        message: "Payment not completed",
+      });
+    }
+
+    const existing = await transactionCollection.findOne({
+      stripeSessionId: sessionId,
+    });
+
+    if (existing) {
+      return res.status(200).json({
+        success: true,
+        message: "Already saved",
+      });
+    }
+
+    const {
+      hireRequestId,
+      lawyerId,
+      userId,
+    } = session.metadata;
+
+
+    // IMPORTANT
+    const paymentIntentId =
+
+      typeof session.payment_intent === "object"
+
+        ? session.payment_intent.id
+
+        : session.payment_intent;
+
+
+    await transactionCollection.insertOne({
+
+      stripeSessionId: session.id,
+
+      paymentIntentId, // <-- add this
+
+      hireRequestId,
+
+      lawyerId,
+
+      userId,
+
+      amount:
+        session.amount_total / 100,
+
+      currency:
+        session.currency,
+
+      customerEmail:
+        session.customer_details?.email,
+
+      status:
+        "successful",
+
+      createdAt:
+        new Date(),
+
+    });
+
+
+    await hireRequestCollection.updateOne(
+
+      {
+        _id: new ObjectId(hireRequestId),
+      },
+
+      {
+        $set: {
+          status: "paid",
+          paidAt: new Date(),
+        },
+      }
+
+    );
+
+
+    res.status(201).json({
+
+      success: true,
+
+      message: "Transaction saved",
+
+    });
+
+  } catch (error) {
+
+    console.error(error);
+
+    res.status(500).json({
+
+      success: false,
+
+      message: "Server error",
+
+    });
+
+  }
+
+});
+  
+  
+    app.patch("/api/user/:id/plan", async (req, res) => {
   try {
     const { id } = req.params;
-    const { amount, sessionId } = req.body; // ← receive from frontend
+
+    const {
+      amount,
+      sessionId,
+      paymentIntentId,
+    } = req.body;
+
+    console.log(req.body);
 
     const result = await userCollection.updateOne(
-      { _id: new ObjectId(id), role: "lawyer" },
+      {
+        _id: new ObjectId(id),
+        role: "lawyer",
+      },
       {
         $set: {
           plan: "paid",
+
           planActivatedAt: new Date(),
-          planAmount: amount || 0,        // ← dynamic from frontend
-          stripeSessionId: sessionId,     // ← store session id for reference
+
+          planAmount: amount || 0,
+
+          stripeSessionId: sessionId,
+
+          paymentIntentId,
+
           updatedAt: new Date(),
         },
       }
     );
 
     if (result.matchedCount === 0) {
-      return res.status(404).json({ success: false, message: "Lawyer not found" });
+      return res.status(404).json({
+        success: false,
+        message: "Lawyer not found",
+      });
     }
 
-    res.json({ success: true, message: "Plan updated successfully" });
+    res.json({
+      success: true,
+      message: "Plan updated successfully",
+    });
+
   } catch (error) {
     console.error(error);
-    res.status(500).json({ success: false, message: "Server error" });
+
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
   }
 });
 
@@ -476,79 +697,309 @@ async function run() {
       }
     });
 
-   //api for admin
-// 1. GET ALL USERS
-app.get("/api/users", async (req, res) => {
-  try {
-    const users = await userCollection.find({}).toArray();
-    res.json(users);
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
+    //api for admin
+    // 1. GET ALL USERS
+    app.get("/api/users", async (req, res) => {
+      try {
+        const users = await userCollection.find({}).toArray();
+        res.json(users);
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
 
-// 2. UPDATE USER ROLE
-app.patch("/api/users/:id/role", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { role } = req.body;
+    // 2. UPDATE USER ROLE
+    app.patch("/api/users/:id/role", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { role } = req.body;
 
-    const result = await userCollection.updateOne(
-      { _id: new ObjectId(id) },
-      { $set: { role: role, updatedAt: new Date() } }
+        const result = await userCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { role: role, updatedAt: new Date() } }
+        );
+
+        if (result.matchedCount === 0) {
+          return res.status(404).json({ success: false, message: "User not found" });
+        }
+        res.json({ success: true, message: "User role updated successfully" });
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    // 3. DELETE USER
+    app.delete("/api/users/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const result = await userCollection.deleteOne({ _id: new ObjectId(id) });
+
+        if (result.deletedCount === 0) {
+          return res.status(404).json({ success: false, message: "User not found" });
+        }
+        res.json({ success: true, message: "User deleted successfully" });
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    // GET ADMIN DASHBOARD OVERVIEW METRICS
+    app.get("/api/admin/stats", async (req, res) => {
+      try {
+        // 1. Total count of all documents inside user collection
+        const totalUsers = await userCollection.countDocuments({});
+
+        // 2. Count users whose role field is exactly "lawyer"
+        const totalLawyers = await userCollection.countDocuments({ role: "lawyer" });
+
+        // 3. Aggregate total transaction calculations (calculating the sum of all planAmount values)
+        const revenueData = await userCollection.aggregate([
+          { $match: { planAmount: { $exists: true } } },
+          { $group: { _id: null, totalSales: { $sum: "$planAmount" } } }
+        ]).toArray();
+
+        const totalRevenue = revenueData.length > 0 ? revenueData[0].totalSales : 0;
+
+        res.json({
+          totalUsers,
+          totalLawyers,
+          totalRevenue: parseFloat(totalRevenue.toFixed(2)),
+          platformStanding: "Healthy"
+        });
+      } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+
+app.get("/api/admin/all-transactions", async (req, res) => {
+  try {
+
+    // Client → Lawyer transactions
+    const transactions = await transactionCollection
+      .find({})
+      .toArray();
+
+    // Lawyer activation payments
+    const lawyerPayments = await userCollection
+      .find({
+        role: "lawyer",
+        plan: "paid",
+        stripeSessionId: { $exists: true },
+      })
+      .toArray();
+
+
+
+    // ==========================
+    // Client hiring transactions
+    // ==========================
+
+    const hirePayments = await Promise.all(
+
+      transactions.map(async (transaction) => {
+
+        const user = await userCollection.findOne({
+          _id: new ObjectId(transaction.userId),
+        });
+
+        const lawyer = await userCollection.findOne({
+          _id: new ObjectId(transaction.lawyerId),
+        });
+
+        return {
+
+          _id: transaction._id,
+
+          paymentType: "Hire Lawyer",
+
+          transactionId:
+            transaction.paymentIntentId ||
+            transaction.stripeSessionId,
+
+          userEmail:
+            user?.email || "N/A",
+
+          userRole:
+            user?.role || "client",
+
+          lawyerEmail:
+            lawyer?.email || "N/A",
+
+          lawyerRole:
+            lawyer?.role || "lawyer",
+
+          amount:
+            transaction.amount,
+
+          status:
+            transaction.status,
+
+          createdAt:
+            transaction.createdAt,
+
+        };
+
+      })
+
     );
 
-    if (result.matchedCount === 0) {
-      return res.status(404).json({ success: false, message: "User not found" });
-    }
-    res.json({ success: true, message: "User role updated successfully" });
+
+
+    // ==========================
+    // Lawyer activation payments
+    // ==========================
+
+    const activationPayments = lawyerPayments.map((lawyer) => ({
+
+      _id: lawyer._id,
+
+      paymentType: "Lawyer Activation",
+
+      transactionId:
+        lawyer.paymentIntentId ||
+        lawyer.stripeSessionId,
+
+      userEmail:
+        lawyer.email,
+
+      userRole:
+        lawyer.role,
+
+      lawyerEmail:
+        "N/A",
+
+      lawyerRole:
+        "N/A",
+
+      amount:
+        lawyer.planAmount,
+
+      status:
+        lawyer.plan,
+
+      createdAt:
+        lawyer.planActivatedAt,
+
+    }));
+
+
+
+    // ==========================
+    // Merge both arrays
+    // ==========================
+
+    const allPayments = [
+
+      ...hirePayments,
+
+      ...activationPayments,
+
+    ];
+
+
+
+    // ==========================
+    // Sort latest first
+    // ==========================
+
+    allPayments.sort(
+
+      (a, b) =>
+
+        new Date(b.createdAt) -
+
+        new Date(a.createdAt)
+
+    );
+
+
+
+    res.send(allPayments);
+
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+
+    console.error(error);
+
+    res.status(500).send({
+
+      message: "Failed to fetch transactions",
+
+    });
+
   }
 });
-
-// 3. DELETE USER
-app.delete("/api/users/:id", async (req, res) => {
+//admin analitics api
+app.get("/api/admin/analytics", async (req, res) => {
   try {
-    const { id } = req.params;
-    const result = await userCollection.deleteOne({ _id: new ObjectId(id) });
 
-    if (result.deletedCount === 0) {
-      return res.status(404).json({ success: false, message: "User not found" });
-    }
-    res.json({ success: true, message: "User deleted successfully" });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
+    // Total users (clients)
+    const totalUsers = await userCollection.countDocuments({
+      role: "client",
+    });
 
-// GET ADMIN DASHBOARD OVERVIEW METRICS
-app.get("/api/admin/stats", async (req, res) => {
-  try {
-    // 1. Total count of all documents inside user collection
-    const totalUsers = await userCollection.countDocuments({});
+    // Total lawyers
+    const totalLawyers = await userCollection.countDocuments({
+      role: "lawyer",
+    });
 
-    // 2. Count users whose role field is exactly "lawyer"
-    const totalLawyers = await userCollection.countDocuments({ role: "lawyer" });
+    // Total hires
+    const totalHires = await transactionCollection.countDocuments();
 
-    // 3. Aggregate total transaction calculations (calculating the sum of all planAmount values)
-    const revenueData = await userCollection.aggregate([
-      { $match: { planAmount: { $exists: true } } },
-      { $group: { _id: null, totalSales: { $sum: "$planAmount" } } }
+    // Revenue from hire payments
+    const hireRevenue = await transactionCollection.aggregate([
+      {
+        $group: {
+          _id: null,
+          total: { $sum: "$amount" },
+        },
+      },
     ]).toArray();
 
-    const totalRevenue = revenueData.length > 0 ? revenueData[0].totalSales : 0;
+    // Revenue from lawyer activation
+    const lawyerRevenue = await userCollection.aggregate([
+      {
+        $match: {
+          role: "lawyer",
+          plan: "paid",
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: "$planAmount" },
+        },
+      },
+    ]).toArray();
 
-    res.json({
+    const totalRevenue =
+      (hireRevenue[0]?.total || 0) +
+      (lawyerRevenue[0]?.total || 0);
+
+    res.send({
+
       totalUsers,
+
       totalLawyers,
-      totalRevenue: parseFloat(totalRevenue.toFixed(2)),
-      platformStanding: "Healthy"
+
+      totalHires,
+
+      totalRevenue,
+
     });
+
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+
+    console.log(error);
+
+    res.status(500).send({
+      message: "Failed to load analytics",
+    });
+
   }
 });
+
+
 
     console.log("MongoDB connected successfully");
   } catch (error) {
