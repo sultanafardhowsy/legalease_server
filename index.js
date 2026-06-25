@@ -7,6 +7,8 @@ require('dotenv').config()
 const Stripe = require("stripe");
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
+
+
 app.use(
   cors({
     origin: [
@@ -41,6 +43,75 @@ async function run() {
     const hireRequestCollection = database.collection("hireRequests");
     const transactionCollection = database.collection("transaction");
     const commentCollection = database.collection("comments");
+
+const serviceCollection = database.collection("services");
+const lawyerServiceCollection = database.collection("lawyerservices");
+
+// GET all services (for dropdown)
+app.get('/api/services', async (req, res) => {
+  try {
+    const services = await serviceCollection.find({}).sort({ name: 1 }).toArray();
+    res.status(200).json(services);
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to fetch services' });
+  }
+});
+
+// GET a lawyer's added services
+app.get('/api/lawyer/services/:lawyerId', async (req, res) => {
+  try {
+    const entries = await lawyerServiceCollection
+      .find({ lawyerId: req.params.lawyerId })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    // Manually join with services collection
+    const enriched = await Promise.all(
+      entries.map(async (entry) => {
+        const service = await serviceCollection.findOne({ _id: new ObjectId(entry.serviceId) });
+        return { ...entry, service };
+      })
+    );
+
+    res.status(200).json(enriched);
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to fetch lawyer services' });
+  }
+});
+
+// POST add a service to lawyer profile
+app.post('/api/lawyer/services', async (req, res) => {
+  const { lawyerId, serviceId } = req.body;
+  if (!lawyerId || !serviceId) {
+    return res.status(400).json({ message: 'lawyerId and serviceId are required' });
+  }
+  try {
+    const already = await lawyerServiceCollection.findOne({ lawyerId, serviceId });
+    if (already) return res.status(409).json({ message: 'Service already added' });
+
+    const result = await lawyerServiceCollection.insertOne({
+      lawyerId,
+      serviceId,
+      createdAt: new Date()
+    });
+
+    const service = await serviceCollection.findOne({ _id: new ObjectId(serviceId) });
+    res.status(201).json({ _id: result.insertedId, lawyerId, serviceId, service });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to add service' });
+  }
+});
+
+// DELETE remove a service from lawyer profile
+app.delete('/api/lawyer/services/:id', async (req, res) => {
+  try {
+    const result = await lawyerServiceCollection.deleteOne({ _id: new ObjectId(req.params.id) });
+    if (result.deletedCount === 0) return res.status(404).json({ message: 'Service not found' });
+    res.status(200).json({ message: 'Service removed successfully' });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to remove service' });
+  }
+});
 
     // POST /api/comments
     app.post('/api/comments', async (req, res) => {
@@ -320,20 +391,29 @@ async function run() {
 
     // POST /api/hire-requests
     app.post('/api/hire-requests', async (req, res) => {
-      try {
-        const { userId, lawyerId } = req.body;
-        if (!userId || !lawyerId) return res.status(400).json({ message: "userId and lawyerId are required." });
-        const existing = await hireRequestCollection.findOne({ userId, lawyerId, status: "pending" });
-        if (existing) return res.status(409).json({ message: "You already have a pending request for this lawyer." });
-        const result = await hireRequestCollection.insertOne({
-          userId, lawyerId, status: "pending", requestDate: new Date(),
-        });
-        res.status(201).json({ message: "Hire request sent successfully!", insertedId: result.insertedId });
-      } catch (error) {
-        console.error("Hire Request Error:", error);
-        res.status(500).json({ message: "Failed to send hire request.", error: error.message });
-      }
+  try {
+    const { userId, lawyerId, serviceId, serviceName, fee } = req.body;
+    if (!userId || !lawyerId) return res.status(400).json({ message: "userId and lawyerId are required." });
+
+    const existing = await hireRequestCollection.findOne({ userId, lawyerId, status: "pending" });
+    if (existing) return res.status(409).json({ message: "You already have a pending request for this lawyer." });
+
+    const result = await hireRequestCollection.insertOne({
+      userId,
+      lawyerId,
+      status: "pending",
+      requestDate: new Date(),
+      serviceId: serviceId || null,
+      serviceName: serviceName || null,
+      fee: fee || null,
     });
+
+    res.status(201).json({ message: "Hire request sent successfully!", insertedId: result.insertedId });
+  } catch (error) {
+    console.error("Hire Request Error:", error);
+    res.status(500).json({ message: "Failed to send hire request.", error: error.message });
+  }
+});
 
     // GET /api/hire-requests/lawyer/:lawyerId
     app.get('/api/hire-requests/lawyer/:lawyerId', async (req, res) => {
