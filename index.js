@@ -236,55 +236,87 @@ async function run() {
     });
 
     // GET /api/lawyers
-    app.get("/api/lawyers", async (req, res) => {
-      try {
-        const { search, specialization, sort, minFee, maxFee, availability } = req.query;
-        const query = {};
+   app.get("/api/lawyers", async (req, res) => {
+  try {
+    // 1. Extract all query parameters, including page and limit
+    const { 
+      search, specialization, sort, minFee, maxFee, availability, 
+      page, limit 
+    } = req.query;
+    
+    const query = {};
 
-        if (search) {
-          query.$or = [
-            { name: { $regex: search, $options: "i" } },
-            { specialization: { $regex: search, $options: "i" } },
-          ];
-        }
+    // --- YOUR FILTERING LOGIC (Unchanged) ---
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: "i" } },
+        { specialization: { $regex: search, $options: "i" } },
+      ];
+    }
 
-        if (specialization && specialization !== "all") {
-          if (query.$or) {
-            query.$and = [{ $or: query.$or }, { specialization }];
-            delete query.$or;
-          } else {
-            query.specialization = specialization;
-          }
-        }
-
-        if (minFee || maxFee) {
-          query.fee = {};
-          if (minFee) query.fee.$gte = Number(minFee);
-          if (maxFee) query.fee.$lte = Number(maxFee);
-        }
-
-        if (availability && availability !== "all") {
-          query.status = availability;
-        }
-
-        let sortOption = { dateJoined: -1 };
-        if (sort === "fee-low") sortOption = { fee: 1 };
-        else if (sort === "fee-high") sortOption = { fee: -1 };
-        else if (sort === "newest") sortOption = { dateJoined: -1 };
-
-        const lawyers = await lawyerCollection.find(query).sort(sortOption).toArray();
-
-        const normalized = lawyers.map((l) => ({
-          ...l,
-          dateJoined: l.dateJoined?.$date ? new Date(l.dateJoined.$date) : l.dateJoined,
-        }));
-
-        res.status(200).send(normalized);
-      } catch (error) {
-        console.error("Backend API Error:", error);
-        res.status(500).send({ message: "Failed to fetch lawyers", error: error.message });
+    if (specialization && specialization !== "all") {
+      if (query.$or) {
+        query.$and = [{ $or: query.$or }, { specialization }];
+        delete query.$or;
+      } else {
+        query.specialization = specialization;
       }
+    }
+
+    if (minFee || maxFee) {
+      query.fee = {};
+      if (minFee) query.fee.$gte = Number(minFee);
+      if (maxFee) query.fee.$lte = Number(maxFee);
+    }
+
+    if (availability && availability !== "all") {
+      query.status = availability;
+    }
+
+    // --- YOUR SORTING LOGIC (Unchanged) ---
+    let sortOption = { dateJoined: -1 };
+    if (sort === "fee-low") sortOption = { fee: 1 };
+    else if (sort === "fee-high") sortOption = { fee: -1 };
+    else if (sort === "newest") sortOption = { dateJoined: -1 };
+
+    // --- NEW PAGINATION LOGIC ---
+    // Default to page 1, and 6 items per page
+    const currentPage = parseInt(page) || 1;
+    const currentLimit = parseInt(limit) || 8;
+    const skip = (currentPage - 1) * currentLimit;
+
+    // Count how many total documents match the user's filters
+    const totalLawyers = await lawyerCollection.countDocuments(query);
+
+    // Fetch the data with sorting, skipping, and limiting applied
+    const lawyers = await lawyerCollection
+      .find(query)
+      .sort(sortOption)
+      .skip(skip)
+      .limit(currentLimit)
+      .toArray();
+
+    // --- YOUR DATA NORMALIZATION (Unchanged) ---
+    const normalized = lawyers.map((l) => ({
+      ...l,
+      dateJoined: l.dateJoined?.$date ? new Date(l.dateJoined.$date) : l.dateJoined,
+    }));
+
+    // --- NEW RESPONSE FORMAT ---
+    // Send back the data plus the pagination metadata
+    res.status(200).send({
+      lawyers: normalized,
+      currentPage,
+      totalPages: Math.ceil(totalLawyers / currentLimit),
+      totalLawyers,
+      limit: currentLimit
     });
+
+  } catch (error) {
+    console.error("Backend API Error:", error);
+    res.status(500).send({ message: "Failed to fetch lawyers", error: error.message });
+  }
+});
 
     // POST /api/hire-requests
     app.post('/api/hire-requests', async (req, res) => {
@@ -402,106 +434,7 @@ async function run() {
     });
 
     // POST /api/transactions/save-success
-//     app.post("/api/transactions/save-success", async (req, res) => {
-//   try {
-//     const { sessionId } = req.body;
 
-//     if (!sessionId) {
-//       return res.status(400).json({
-//         success: false,
-//         message: "Missing sessionId",
-//       });
-//     }
-
-//     const session =
-//       await stripe.checkout.sessions.retrieve(
-//         sessionId,
-//         {
-//           expand: ["payment_intent"],
-//         }
-//       );
-
-//     if (session.payment_status !== "paid") {
-//       return res.status(400).json({
-//         success: false,
-//         message: "Payment not completed",
-//       });
-//     }
-
-//     const existing =
-//       await transactionCollection.findOne({
-//         stripeSessionId: sessionId,
-//       });
-
-//     if (existing) {
-//       return res.status(200).json({
-//         success: true,
-//         message: "Already saved",
-//       });
-//     }
-
-//     const {
-//       hireRequestId,
-//       lawyerId,
-//       userId,
-//     } = session.metadata;
-
-//     const paymentIntentId =
-//       typeof session.payment_intent === "object"
-//         ? session.payment_intent.id
-//         : session.payment_intent;
-
-//     await transactionCollection.insertOne({
-//       stripeSessionId: session.id,
-
-//       paymentIntentId,
-
-//       hireRequestId,
-//       lawyerId,
-//       userId,
-
-//       amount: session.amount_total / 100,
-
-//       currency: session.currency,
-
-//       customerEmail:
-//         session.customer_details?.email,
-
-//       status: "successful",
-
-//       createdAt: new Date(),
-//     });
-
-//     await hireRequestCollection.updateOne(
-//       {
-//         _id: new ObjectId(hireRequestId),
-//       },
-//       {
-//         $set: {
-//           status: "paid",
-//           paidAt: new Date(),
-//         },
-//       }
-//     );
-
-//     res.status(201).json({
-//       success: true,
-//       message: "Transaction saved",
-//     });
-
-//   } catch (error) {
-//     console.error("Database save error:", error);
-
-//     res.status(500).json({
-//       success: false,
-//       message: "Server error",
-//     });
-//   }
-// });
-
-
-    // PATCH /user/:id/plan
-  
   app.post("/api/transactions/save-success", async (req, res) => {
   try {
 
