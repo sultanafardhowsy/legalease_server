@@ -632,14 +632,27 @@ async function run() {
 
     //api for admin
     // 1. GET ALL USERS
-    app.get("/api/users", async (req, res) => {
-      try {
-        const users = await userCollection.find({}).toArray();
-        res.json(users);
-      } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-      }
+   app.get("/api/users", async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 8;
+    const skip = (page - 1) * limit;
+
+    // Fetch total count and the sliced data in parallel
+    const [totalUsers, users] = await Promise.all([
+      userCollection.countDocuments(),
+      userCollection.find({}).skip(skip).limit(limit).toArray(),
+    ]);
+
+    res.json({
+      users,
+      totalPages: Math.ceil(totalUsers / limit),
+      totalUsers,
     });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
     // 2. UPDATE USER ROLE
     app.patch("/api/users/:id/role", async (req, res) => {
@@ -707,13 +720,11 @@ async function run() {
 
 app.get("/api/admin/all-transactions", async (req, res) => {
   try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 8;
+    const skip = (page - 1) * limit;
 
-    // Client → Lawyer transactions
-    const transactions = await transactionCollection
-      .find({})
-      .toArray();
-
-    // Lawyer activation payments
+    // 1. Fetch un-paginated pool of Lawyer Activation Payments
     const lawyerPayments = await userCollection
       .find({
         role: "lawyer",
@@ -722,144 +733,65 @@ app.get("/api/admin/all-transactions", async (req, res) => {
       })
       .toArray();
 
+    const activationPayments = lawyerPayments.map((lawyer) => ({
+      _id: lawyer._id,
+      paymentType: "Lawyer Activation",
+      transactionId: lawyer.paymentIntentId || lawyer.stripeSessionId,
+      userEmail: lawyer.email,
+      userRole: lawyer.role,
+      lawyerEmail: "N/A",
+      lawyerRole: "N/A",
+      amount: lawyer.planAmount,
+      status: lawyer.plan,
+      createdAt: lawyer.planActivatedAt,
+    }));
 
-
-    // ==========================
-    // Client hiring transactions
-    // ==========================
+    // 2. Fetch un-paginated pool of Client Hiring Transactions
+    const transactions = await transactionCollection.find({}).toArray();
 
     const hirePayments = await Promise.all(
-
       transactions.map(async (transaction) => {
-
         const user = await userCollection.findOne({
           _id: new ObjectId(transaction.userId),
         });
-
         const lawyer = await userCollection.findOne({
           _id: new ObjectId(transaction.lawyerId),
         });
 
         return {
-
           _id: transaction._id,
-
           paymentType: "Hire Lawyer",
-
-          transactionId:
-            transaction.paymentIntentId ||
-            transaction.stripeSessionId,
-
-          userEmail:
-            user?.email || "N/A",
-
-          userRole:
-            user?.role || "client",
-
-          lawyerEmail:
-            lawyer?.email || "N/A",
-
-          lawyerRole:
-            lawyer?.role || "lawyer",
-
-          amount:
-            transaction.amount,
-
-          status:
-            transaction.status,
-
-          createdAt:
-            transaction.createdAt,
-
+          transactionId: transaction.paymentIntentId || transaction.stripeSessionId,
+          userEmail: user?.email || "N/A",
+          userRole: user?.role || "client",
+          lawyerEmail: lawyer?.email || "N/A",
+          lawyerRole: lawyer?.role || "lawyer",
+          amount: transaction.amount,
+          status: transaction.status,
+          createdAt: transaction.createdAt,
         };
-
       })
-
     );
 
+    // 3. Merge both arrays and sort latest first
+    const allPayments = [...hirePayments, ...activationPayments];
+    allPayments.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
+    // 4. Apply Pagination Slicing in memory
+    const paginatedPayments = allPayments.slice(skip, skip + limit);
 
-    // ==========================
-    // Lawyer activation payments
-    // ==========================
-
-    const activationPayments = lawyerPayments.map((lawyer) => ({
-
-      _id: lawyer._id,
-
-      paymentType: "Lawyer Activation",
-
-      transactionId:
-        lawyer.paymentIntentId ||
-        lawyer.stripeSessionId,
-
-      userEmail:
-        lawyer.email,
-
-      userRole:
-        lawyer.role,
-
-      lawyerEmail:
-        "N/A",
-
-      lawyerRole:
-        "N/A",
-
-      amount:
-        lawyer.planAmount,
-
-      status:
-        lawyer.plan,
-
-      createdAt:
-        lawyer.planActivatedAt,
-
-    }));
-
-
-
-    // ==========================
-    // Merge both arrays
-    // ==========================
-
-    const allPayments = [
-
-      ...hirePayments,
-
-      ...activationPayments,
-
-    ];
-
-
-
-    // ==========================
-    // Sort latest first
-    // ==========================
-
-    allPayments.sort(
-
-      (a, b) =>
-
-        new Date(b.createdAt) -
-
-        new Date(a.createdAt)
-
-    );
-
-
-
-    res.send(allPayments);
-
-  } catch (error) {
-
-    console.error(error);
-
-    res.status(500).send({
-
-      message: "Failed to fetch transactions",
-
+    // 5. Send back the subset alongside boundaries
+    res.send({
+      transactions: paginatedPayments,
+      totalPages: Math.ceil(allPayments.length / limit),
+      totalTransactions: allPayments.length,
     });
-
+    
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({
+      message: "Failed to fetch transactions",
+    });
   }
 });
 //admin analitics api
