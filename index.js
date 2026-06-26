@@ -47,6 +47,80 @@ async function run() {
 const serviceCollection = database.collection("services");
 const lawyerServiceCollection = database.collection("lawyerservices");
 
+//top 3
+app.get("/api/lawyers/top", async (req, res) => {
+  try {
+    const topLawyers = await hireRequestCollection
+      .aggregate([
+        // Step 1: Only paid requests
+        {
+          $match: { status: "paid" }
+        },
+
+        // Step 2: Group by lawyerId, count hires
+        {
+          $group: {
+            _id: "$lawyerId",
+            hireCount: { $sum: 1 }
+          }
+        },
+
+        // Step 3: Sort highest first
+        { $sort: { hireCount: -1 } },
+
+        // Step 4: Top 3 only
+        { $limit: 3 },
+
+        // Step 5: lookup using string-to-string match
+        // because lawyers._id is a plain string, NOT ObjectId
+        {
+          $lookup: {
+            from: "lawyers",
+            let: { lid: "$_id" },
+            pipeline: [
+              {
+                $match: {
+                  $expr: {
+                    $eq: [{ $toString: "$_id" }, "$$lid"]
+                  }
+                }
+              }
+            ],
+            as: "lawyerInfo"
+          }
+        },
+
+        // Step 6: Filter out any unmatched
+        {
+          $match: {
+            lawyerInfo: { $ne: [] }
+          }
+        },
+
+        // Step 7: Flatten
+        { $unwind: "$lawyerInfo" },
+
+        // Step 8: Final shape
+        {
+          $project: {
+            _id: "$lawyerInfo._id",
+            name: "$lawyerInfo.name",
+            imageUrl: "$lawyerInfo.imageUrl",
+            specialization: "$lawyerInfo.specialization",
+            hireCount: 1
+          }
+        }
+      ])
+      .toArray();
+
+    res.json(topLawyers);
+  } catch (err) {
+    console.error("Top lawyers error:", err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+
 // GET all services (for dropdown)
 app.get('/api/services', async (req, res) => {
   try {
@@ -943,7 +1017,6 @@ app.get("/api/admin/analytics", async (req, res) => {
 
   }
 });
-
 
 
     console.log("MongoDB connected successfully");
