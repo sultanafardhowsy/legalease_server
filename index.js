@@ -7,8 +7,6 @@ require('dotenv').config()
 const Stripe = require("stripe");
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-
-
 app.use(
   cors({
     origin: [
@@ -21,9 +19,12 @@ app.use(
 );
 app.use(express.json());
 
+
+
 app.get('/', (req, res) => {
   res.send('Hello World!')
 })
+
 
 const uri = process.env.MONGODB_URI;
 
@@ -47,8 +48,84 @@ async function run() {
 const serviceCollection = database.collection("services");
 const lawyerServiceCollection = database.collection("lawyerservices");
 
-//top 3
-app.get("/api/lawyers/top", async (req, res) => {
+// ✅ ADD THIS — verify Better Auth session token via MongoDB
+const verifyToken = async (req, res, next) => {
+  try {
+    // Check Authorization header first
+    let token = req.headers.authorization?.split(" ")[1];
+
+    // Fallback: read from Better Auth session cookie
+   if (!token && req.headers.cookie) {
+  const cookies = req.headers.cookie.split(";").reduce((acc, c) => {
+    const [k, v] = c.trim().split("=");
+    acc[k] = v;
+    return acc;
+  }, {});
+  
+  const rawToken = cookies["better-auth.session_token"] 
+               || cookies["__Secure-better-auth.session_token"];
+  
+  // Strip the .signature part Better Auth appends
+  if (rawToken) {
+    token = decodeURIComponent(rawToken).split(".")[0];
+  }
+}
+
+console.log("Resolved token:", token); // Should now print just: GOMJMpFlLRoJjW0s4Ion651o1yFCuupX
+
+    if (!token) {
+      return res.status(401).json({ message: "Unauthorized: No token provided" });
+    }
+
+    const sessionRecord = await client
+      .db("legalease_user")
+      .collection("session")
+      .findOne({ token });
+
+    if (!sessionRecord || new Date(sessionRecord.expiresAt) < new Date()) {
+      return res.status(401).json({ message: "Unauthorized: Invalid or expired session" });
+    }
+
+    const user = await client
+      .db("legalease_user")
+      .collection("user")
+      .findOne({ _id: sessionRecord.userId });
+console.log(user,"user of the session");
+    if (!user) {
+      return res.status(401).json({ message: "Unauthorized: User not found" });
+    }
+
+    req.user = user;
+    next();
+  } catch (err) {
+    console.error("verifyToken error:", err);
+    res.status(401).json({ message: "Unauthorized" });
+  }
+};
+
+const verifyClient = async(req,res,next) =>{
+  const role = req.user?.role || "client";
+  if(role !== "client"){
+    return res.status(403).send({message:'forbidden access'})
+  }
+  next();
+}
+
+const verifyLawyer = async(req,res,next) =>{
+  if(req.user?.role !== "lawyer"){
+    return res.status(403).send({message:'forbidden access'})
+  }
+  next();
+}
+
+const verifyAdmin = async(req,res,next) =>{
+  if(req.user?.role !== "admin"){
+    return res.status(403).send({message:'forbidden access'})
+  }
+  next();
+}
+//top 3/ verification not needed
+app.get("/api/lawyers/top",async (req, res) => {
   try {
     const topLawyers = await hireRequestCollection
       .aggregate([
@@ -121,7 +198,7 @@ app.get("/api/lawyers/top", async (req, res) => {
 });
 
 
-// GET all services (for dropdown)
+// GET all services (for dropdown)/ verification not needed
 app.get('/api/services', async (req, res) => {
   try {
     const services = await serviceCollection.find({}).sort({ name: 1 }).toArray();
@@ -131,7 +208,7 @@ app.get('/api/services', async (req, res) => {
   }
 });
 
-// GET a lawyer's added services
+// GET a lawyer's added services/ verification not needed
 app.get('/api/lawyer/services/:lawyerId', async (req, res) => {
   try {
     const entries = await lawyerServiceCollection
@@ -155,8 +232,12 @@ app.get('/api/lawyer/services/:lawyerId', async (req, res) => {
 
 // POST add a service to lawyer profile
 app.post('/api/lawyer/services', async (req, res) => {
-  const { lawyerId, serviceId } = req.body;
-  if (!lawyerId || !serviceId) {
+  const { serviceId } = req.body;
+  const lawyerId = req.body.lawyerId || req.user._id.toString();
+  if (lawyerId !== req.user._id.toString()) {
+    return res.status(403).json({ message: 'forbidden access' });
+  }
+  if (!serviceId) {
     return res.status(400).json({ message: 'lawyerId and serviceId are required' });
   }
   try {
@@ -176,9 +257,16 @@ app.post('/api/lawyer/services', async (req, res) => {
   }
 });
 
+
+
 // DELETE remove a service from lawyer profile
-app.delete('/api/lawyer/services/:id', async (req, res) => {
+app.delete('/api/lawyer/services/:id', verifyToken, verifyLawyer, async (req, res) => {
   try {
+    const entry = await lawyerServiceCollection.findOne({ _id: new ObjectId(req.params.id) });
+    if (!entry) return res.status(404).json({ message: 'Service not found' });
+    if (entry.lawyerId !== req.user._id.toString()) {
+      return res.status(403).json({ message: 'forbidden access' });
+    }
     const result = await lawyerServiceCollection.deleteOne({ _id: new ObjectId(req.params.id) });
     if (result.deletedCount === 0) return res.status(404).json({ message: 'Service not found' });
     res.status(200).json({ message: 'Service removed successfully' });
@@ -188,10 +276,11 @@ app.delete('/api/lawyer/services/:id', async (req, res) => {
 });
 
     // POST /api/comments
-    app.post('/api/comments', async (req, res) => {
+    app.post('/api/comments', verifyToken, verifyClient, async (req, res) => {
       try {
-        const { lawyerId, userId, userName, userImage, text } = req.body;
-        if (!lawyerId || !userId || !text) {
+        const { lawyerId, userName, userImage, text } = req.body;
+        const userId = req.user._id.toString();
+        if (!lawyerId || !text) {
           return res.status(400).json({ message: "Missing required comment fields." });
         }
         const hasHired = await hireRequestCollection.findOne({ userId, lawyerId, status: "paid" });
@@ -215,10 +304,15 @@ app.delete('/api/lawyer/services/:id', async (req, res) => {
     });
 
     // GET /api/comments/check-eligibility — must be before /api/comments/lawyer/:lawyerId
-    app.get('/api/comments/check-eligibility', async (req, res) => {
+    app.get('/api/comments/check-eligibility', verifyToken, async (req, res) => {
       try {
-        const { userId, lawyerId } = req.query;
+        const { lawyerId } = req.query;
+        if (!lawyerId) {
+          return res.status(400).json({ message: "lawyerId is required." });
+        }
+        const userId = req.user._id.toString();
         const hasHired = await hireRequestCollection.findOne({ userId, lawyerId, status: "paid" });
+        res.status(200).json({ canComment: !!hasHired });
         res.status(200).json({ canComment: !!hasHired });
       } catch (error) {
         res.status(500).json({ canComment: false });
@@ -226,9 +320,12 @@ app.delete('/api/lawyer/services/:id', async (req, res) => {
     });
 
     // GET /api/comments/client/:userId — must be before /api/comments/:id
-    app.get('/api/comments/client/:userId', async (req, res) => {
+    app.get('/api/comments/client/:userId', verifyToken, verifyClient, async (req, res) => {
       try {
         const { userId } = req.params;
+        if (userId !== req.user._id.toString()) {
+          return res.status(403).json({ message: 'forbidden access' });
+        }
         const comments = await commentCollection.find({ userId }).toArray();
         const enriched = await Promise.all(
           comments.map(async (comment) => {
@@ -255,10 +352,11 @@ app.delete('/api/lawyer/services/:id', async (req, res) => {
     });
 
     // PATCH /api/comments/:id
-    app.patch('/api/comments/:id', async (req, res) => {
+    app.patch('/api/comments/:id', verifyToken, verifyClient, async (req, res) => {
       try {
         const { id } = req.params;
-        const { text, userId } = req.body;
+        const { text } = req.body;
+        const userId = req.user._id.toString();
         if (!text || text.trim() === "") {
           return res.status(400).json({ message: "Comment text cannot be empty." });
         }
@@ -276,10 +374,11 @@ app.delete('/api/lawyer/services/:id', async (req, res) => {
     });
 
     // PUT /api/comments/:id
-    app.put('/api/comments/:id', async (req, res) => {
+    app.put('/api/comments/:id', verifyToken, verifyClient, async (req, res) => {
       try {
         const { id } = req.params;
-        const { userId, text } = req.body;
+        const { text } = req.body;
+        const userId = req.user._id.toString();
         const result = await commentCollection.updateOne(
           { _id: new ObjectId(id), userId },
           { $set: { text, updatedAt: new Date() } }
@@ -292,10 +391,10 @@ app.delete('/api/lawyer/services/:id', async (req, res) => {
     });
 
     // DELETE /api/comments/:id
-    app.delete('/api/comments/:id', async (req, res) => {
+    app.delete('/api/comments/:id', verifyToken, verifyClient, async (req, res) => {
       try {
         const { id } = req.params;
-        const { userId } = req.body;
+        const userId = req.user._id.toString();
         const comment = await commentCollection.findOne({ _id: new ObjectId(id) });
         if (!comment) return res.status(404).json({ message: "Comment not found." });
         if (comment.userId !== userId) return res.status(403).json({ message: "Unauthorized. You can only delete your own reviews." });
@@ -307,11 +406,14 @@ app.delete('/api/lawyer/services/:id', async (req, res) => {
     });
 
     // POST /api/lawyer/profile
-    app.post('/api/lawyer/profile', async (req, res) => {
+    app.post('/api/lawyer/profile', verifyToken, verifyLawyer, async (req, res) => {
       try {
         const { id, name, specialization, bio, fee, status, imageUrl, dateJoined } = req.body;
         if (!id || !name || !specialization || !bio || !fee || !imageUrl) {
           return res.status(400).json({ message: "All fields are required for initial profile registration." });
+        }
+        if (id !== req.user._id.toString()) {
+          return res.status(403).json({ message: 'forbidden access' });
         }
         const existingProfile = await lawyerCollection.findOne({ _id: id });
         if (existingProfile) {
@@ -333,11 +435,14 @@ app.delete('/api/lawyer/services/:id', async (req, res) => {
     });
 
     // PUT /api/lawyer/profile/update — must be before /api/lawyer/profile/:id
-    app.put('/api/lawyer/profile/update', async (req, res) => {
+    app.put('/api/lawyer/profile/update', verifyToken, verifyLawyer, async (req, res) => {
       try {
         const { id, name, specialization, bio, fee, status, imageUrl } = req.body;
         if (!id || !name || !specialization || !bio || !fee || !imageUrl) {
           return res.status(400).json({ message: "All form fields are required to update your profile." });
+        }
+        if (id !== req.user._id.toString()) {
+          return res.status(403).json({ message: 'forbidden access' });
         }
         const result = await lawyerCollection.updateOne(
           { _id: id },
@@ -355,6 +460,9 @@ app.delete('/api/lawyer/services/:id', async (req, res) => {
     app.get('/api/lawyer/profile/:id', async (req, res) => {
       try {
         const { id } = req.params;
+        if (id !== req.user._id.toString()) {
+          return res.status(403).json({ message: 'forbidden access' });
+        }
         const profile = await lawyerCollection.findOne({ _id: id });
         if (!profile) return res.status(404).json({ message: "No profile found for this user id." });
         res.status(200).json(profile);
@@ -363,7 +471,10 @@ app.delete('/api/lawyer/services/:id', async (req, res) => {
       }
     });
 
-    // GET /api/lawyers/specializations — must be before /api/lawyers
+
+
+
+    // GET /api/lawyers/specializations 
     app.get("/api/lawyers/specializations", async (req, res) => {
       try {
         const specs = await lawyerCollection
@@ -400,13 +511,20 @@ app.delete('/api/lawyer/services/:id', async (req, res) => {
     }
 
     if (specialization && specialization !== "all") {
-      if (query.$or) {
-        query.$and = [{ $or: query.$or }, { specialization }];
-        delete query.$or;
-      } else {
-        query.specialization = specialization;
-      }
-    }
+  const specializationFilter = {
+    specialization: {
+      $regex: `^${specialization.trim()}$`,
+      $options: "i",
+    },
+  };
+
+  if (query.$or) {
+    query.$and = [{ $or: query.$or }, specializationFilter];
+    delete query.$or;
+  } else {
+    Object.assign(query, specializationFilter);
+  }
+}
 
     if (minFee || maxFee) {
       query.fee = {};
@@ -464,10 +582,11 @@ app.delete('/api/lawyer/services/:id', async (req, res) => {
 });
 
     // POST /api/hire-requests
-    app.post('/api/hire-requests', async (req, res) => {
+    app.post('/api/hire-requests', verifyToken, verifyClient, async (req, res) => {
   try {
-    const { userId, lawyerId, serviceId, serviceName, fee } = req.body;
-    if (!userId || !lawyerId) return res.status(400).json({ message: "userId and lawyerId are required." });
+    const { lawyerId, serviceId, serviceName, fee } = req.body;
+    const userId = req.user._id.toString();
+    if (!lawyerId) return res.status(400).json({ message: "lawyerId is required." });
 
     const existing = await hireRequestCollection.findOne({ userId, lawyerId, status: "pending" });
     if (existing) return res.status(409).json({ message: "You already have a pending request for this lawyer." });
@@ -490,9 +609,12 @@ app.delete('/api/lawyer/services/:id', async (req, res) => {
 });
 
     // GET /api/hire-requests/lawyer/:lawyerId
-    app.get('/api/hire-requests/lawyer/:lawyerId', async (req, res) => {
+    app.get('/api/hire-requests/lawyer/:lawyerId', verifyToken, verifyLawyer, async (req, res) => {
       try {
         const { lawyerId } = req.params;
+        if (lawyerId !== req.user._id.toString()) {
+          return res.status(403).json({ message: 'forbidden access' });
+        }
         const requests = await hireRequestCollection.find({ lawyerId }).sort({ requestDate: -1 }).toArray();
         if (requests.length === 0) return res.status(200).json([]);
         const userIds = [...new Set(requests.map(r => r.userId))];
@@ -513,9 +635,12 @@ app.delete('/api/lawyer/services/:id', async (req, res) => {
     });
 
     // GET /api/hire-requests/user/:userId
-    app.get('/api/hire-requests/user/:userId', async (req, res) => {
+    app.get('/api/hire-requests/user/:userId', verifyToken, verifyClient, async (req, res) => {
       try {
         const { userId } = req.params;
+        if (userId !== req.user._id.toString()) {
+          return res.status(403).json({ message: 'forbidden access' });
+        }
         const requests = await hireRequestCollection.find({ userId }).sort({ requestDate: -1 }).toArray();
         if (requests.length === 0) return res.status(200).json([]);
         const lawyerIds = [...new Set(requests.map(r => r.lawyerId))];
@@ -537,10 +662,15 @@ app.delete('/api/lawyer/services/:id', async (req, res) => {
     });
 
     // PATCH /api/hire-requests/:id
-    app.patch('/api/hire-requests/:id', async (req, res) => {
+    app.patch('/api/hire-requests/:id', verifyToken, verifyLawyer, async (req, res) => {
       try {
         const { status } = req.body;
         if (!["accepted", "rejected"].includes(status)) return res.status(400).json({ message: "Status must be accepted or rejected." });
+        const hireRequest = await hireRequestCollection.findOne({ _id: new ObjectId(req.params.id) });
+        if (!hireRequest) return res.status(404).json({ message: "Request not found." });
+        if (hireRequest.lawyerId !== req.user._id.toString()) {
+          return res.status(403).json({ message: 'forbidden access' });
+        }
         const result = await hireRequestCollection.updateOne(
           { _id: new ObjectId(req.params.id) },
           { $set: { status } }
@@ -554,9 +684,12 @@ app.delete('/api/lawyer/services/:id', async (req, res) => {
     });
 
     // GET /api/dashboard/lawyer/:userId
-    app.get('/api/dashboard/lawyer/:userId', async (req, res) => {
+    app.get('/api/dashboard/lawyer/:userId', verifyToken, verifyLawyer, async (req, res) => {
       try {
         const { userId } = req.params;
+        if (userId !== req.user._id.toString()) {
+          return res.status(403).json({ message: 'forbidden access' });
+        }
         const lawyerProfile = await lawyerCollection.findOne({ _id: userId });
         if (!lawyerProfile) return res.status(404).json({ message: "Lawyer profile not found." });
         const lawyerId = lawyerProfile._id.toString();
@@ -576,6 +709,11 @@ app.delete('/api/lawyer/services/:id', async (req, res) => {
     app.post("/api/payment/confirm", async (req, res) => {
       try {
         const { hireRequestId } = req.body;
+        const hireRequest = await hireRequestCollection.findOne({ _id: new ObjectId(hireRequestId) });
+        if (!hireRequest) return res.status(404).json({ message: "Hire request not found." });
+        if (hireRequest.userId !== req.user._id.toString()) {
+          return res.status(403).json({ message: 'forbidden access' });
+        }
         const result = await hireRequestCollection.updateOne(
           { _id: new ObjectId(hireRequestId) },
           { $set: { status: "paid", paidAt: new Date() } }
@@ -613,6 +751,10 @@ app.delete('/api/lawyer/services/:id', async (req, res) => {
         success: false,
         message: "Payment not completed",
       });
+    }
+
+    if (session.metadata?.userId !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: "forbidden access" });
     }
 
     const existing = await transactionCollection.findOne({
@@ -717,6 +859,9 @@ app.delete('/api/lawyer/services/:id', async (req, res) => {
     app.patch("/api/user/:id/plan", async (req, res) => {
   try {
     const { id } = req.params;
+    if (id !== req.user?._id.toString()) {
+      return res.status(403).json({ success: false, message: 'forbidden access' });
+    }
 
     const {
       amount,
@@ -774,6 +919,9 @@ app.delete('/api/lawyer/services/:id', async (req, res) => {
     app.get("/api/lawyer/check-access/:id", async (req, res) => {
       try {
         const { id } = req.params;
+        if (id !== req.user?._id.toString()) {
+          return res.status(403).json({ allowed: false, message: 'forbidden access' });
+        }
         const user = await userCollection.findOne({ _id: new ObjectId(id) });
         if (!user) return res.status(404).json({ allowed: false, message: "User not found" });
         if (user.role === "lawyer" && user.plan === "paid") return res.status(200).json({ allowed: true });
@@ -785,8 +933,10 @@ app.delete('/api/lawyer/services/:id', async (req, res) => {
     });
 
     //api for admin
+    
     // 1. GET ALL USERS
-   app.get("/api/users", async (req, res) => {
+  //  app.get("/api/users", async (req, res) => {
+    app.get("/api/users", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 8;
@@ -809,7 +959,7 @@ app.delete('/api/lawyer/services/:id', async (req, res) => {
 });
 
     // 2. UPDATE USER ROLE
-    app.patch("/api/users/:id/role", async (req, res) => {
+    app.patch("/api/users/:id/role", verifyToken, verifyAdmin, async (req, res) => {
       try {
         const { id } = req.params;
         const { role } = req.body;
@@ -829,7 +979,7 @@ app.delete('/api/lawyer/services/:id', async (req, res) => {
     });
 
     // 3. DELETE USER
-    app.delete("/api/users/:id", async (req, res) => {
+    app.delete("/api/users/:id", verifyToken, verifyAdmin, async (req, res) => {
       try {
         const { id } = req.params;
         const result = await userCollection.deleteOne({ _id: new ObjectId(id) });
@@ -844,7 +994,7 @@ app.delete('/api/lawyer/services/:id', async (req, res) => {
     });
 
     // GET ADMIN DASHBOARD OVERVIEW METRICS
-    app.get("/api/admin/stats", async (req, res) => {
+    app.get("/api/admin/stats", verifyToken, verifyAdmin, async (req, res) => {
       try {
         // 1. Total count of all documents inside user collection
         const totalUsers = await userCollection.countDocuments({});
@@ -872,7 +1022,7 @@ app.delete('/api/lawyer/services/:id', async (req, res) => {
     });
 
 
-app.get("/api/admin/all-transactions", async (req, res) => {
+app.get("/api/admin/all-transactions", verifyToken, verifyAdmin, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 8;
@@ -949,7 +1099,7 @@ app.get("/api/admin/all-transactions", async (req, res) => {
   }
 });
 //admin analitics api
-app.get("/api/admin/analytics", async (req, res) => {
+app.get("/api/admin/analytics", verifyToken, verifyAdmin, async (req, res) => {
   try {
 
     // Total users (clients)
@@ -1017,6 +1167,7 @@ app.get("/api/admin/analytics", async (req, res) => {
 
   }
 });
+
 
 
     console.log("MongoDB connected successfully");
