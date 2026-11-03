@@ -14,7 +14,9 @@
   "type": "commonjs",
   "main": "index.js",
   "scripts": {
-    "test": "hellow from server"
+    "test": "hellow from server",
+    "start": "node index.js",
+    "dev": "node --watch index.js"
   },
   "dependencies": {
     "cors": "^2.8.6",
